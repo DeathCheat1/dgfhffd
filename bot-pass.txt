@@ -1,1 +1,3 @@
-
+PASSWORDS = {
+"RESTART": "820635",
+}
